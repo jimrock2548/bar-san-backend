@@ -1,0 +1,340 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// OAuth Accounts
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String  // "oauth", "email"
+  provider          String  // "google", "facebook", etc.
+  providerAccountId String  // Google user ID
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// Verification Tokens
+model VerificationToken {
+  identifier String   // email หรือ phone
+  token      String   @unique
+  expires    DateTime
+  type       String   @default("email") // "email", "phone", "password_reset"
+  
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// Users (Customers)
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  fullName      String?   @map("full_name")
+  phone         String?
+  image         String?   // Profile image URL
+  passwordHash  String?   @map("password_hash") // nullable for OAuth users
+  isVerified    Boolean   @default(false) @map("is_verified")
+  preferences   Json?     // User preferences (dietary, seating, etc.)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  accounts         Account[]
+  sessions         UserSession[]
+  reservations     Reservation[]
+  tempReservations TemporaryReservation[]
+  reviews          Review[]
+  notifications    Notification[]
+  
+  @@map("users")
+}
+
+// User Sessions
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  sessionToken String   @unique @map("session_token")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  lastActivity DateTime @default(now()) @map("last_activity")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_sessions")
+}
+
+// Cafes/Restaurants
+model Cafe {
+  id          String   @id @default(cuid())
+  name        String   @unique // "BarSan", "NOIR"
+  displayName String   @map("display_name") // "BarSan.", "N O I R"
+  description String?
+  address     String?
+  phone       String?
+  email       String?
+  website     String?
+  image       String?
+  openingHours Json?   @map("opening_hours") // {"monday": {"open": "17:00", "close": "02:00"}}
+  isActive    Boolean  @default(true) @map("is_active")
+  settings    Json?    // Cafe-specific settings
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  zones               Zone[]
+  tables              Table[]
+  reservations        Reservation[]
+  tempReservations    TemporaryReservation[]
+  admins              AdminRole[]
+  notifications       Notification[]
+  activityLogs        ActivityLog[]
+  reviews             Review[]
+  
+  @@map("cafes")
+}
+
+// Zones within cafes
+model Zone {
+  id          String   @id @default(cuid())
+  cafeId      String   @map("cafe_id")
+  name        String   // "Zone A", "Bar Counter", "Couple Table"
+  description String?
+  capacity    Int      @default(0) // Total capacity
+  isActive    Boolean  @default(true) @map("is_active")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  cafe   Cafe    @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  tables Table[]
+  
+  @@unique([cafeId, name])
+  @@map("zones")
+}
+
+// Tables
+model Table {
+  id           String   @id @default(cuid())
+  cafeId       String   @map("cafe_id")
+  zoneId       String   @map("zone_id")
+  number       Int      // Table number
+  seats        Int      // Number of seats
+  minGuests    Int      @default(1) @map("min_guests")
+  maxGuests    Int      @map("max_guests")
+  location     String?  // "ริมหน้าต่าง", "กลางร้าน"
+  features     String[] // ["window_view", "private", "bar_seating"]
+  status       String   @default("available") // "available", "booked", "maintenance"
+  isActive     Boolean  @default(true) @map("is_active")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  cafe         Cafe          @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  zone         Zone          @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  reservations Reservation[]
+  
+  @@unique([cafeId, number])
+  @@map("tables")
+}
+
+// Temporary Reservations (15-minute hold)
+model TemporaryReservation {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id") // nullable for guest users
+  cafeId    String   @map("cafe_id")
+  date      DateTime
+  time      String   // "18:00"
+  guests    Int
+  zoneId    String?  @map("zone_id")
+  tableId   String?  @map("table_id")
+  sessionId String   @map("session_id") // Browser session ID
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  cafe Cafe  @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  
+  @@map("temporary_reservations")
+}
+
+// Main Reservations
+model Reservation {
+  id               String   @id @default(cuid())
+  reservationNumber String  @unique @map("reservation_number") // "RSV001234"
+  userId           String?  @map("user_id") // nullable for guest reservations
+  cafeId           String   @map("cafe_id")
+  tableId          String?  @map("table_id") // nullable until table assigned
+  
+  // Guest Information (for both registered and guest users)
+  guestName        String   @map("guest_name")
+  guestEmail       String   @map("guest_email")
+  guestPhone       String   @map("guest_phone")
+  
+  // Reservation Details
+  date             DateTime
+  time             String   // "18:00"
+  guests           Int
+  duration         Int      @default(120) // minutes
+  status           String   @default("pending") // "pending", "confirmed", "seated", "completed", "cancelled", "no_show"
+  
+  // Additional Information
+  specialRequests  String?  @map("special_requests")
+  notes            String?  // Internal notes
+  source           String   @default("website") // "website", "phone", "walk_in"
+  
+  // Timestamps
+  confirmedAt      DateTime? @map("confirmed_at")
+  seatedAt         DateTime? @map("seated_at")
+  completedAt      DateTime? @map("completed_at")
+  cancelledAt      DateTime? @map("cancelled_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  
+  user  User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  cafe  Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  table Table? @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  
+  @@map("reservations")
+}
+
+// Reviews
+model Review {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  cafeId       String   @map("cafe_id")
+  reservationId String? @map("reservation_id")
+  rating       Int      // 1-5
+  comment      String?
+  isPublic     Boolean  @default(true) @map("is_public")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  
+  @@map("reviews")
+}
+
+// Admin Users
+model Admin {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  isActive     Boolean  @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  roles        AdminRole[]
+  sessions     AdminSession[]
+  activityLogs ActivityLog[]
+  
+  @@map("admins")
+}
+
+// Admin Sessions
+model AdminSession {
+  id           String   @id @default(cuid())
+  adminId      String   @map("admin_id")
+  sessionToken String   @unique @map("session_token")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  lastActivity DateTime @default(now()) @map("last_activity")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  
+  @@map("admin_sessions")
+}
+
+// Roles
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String   @map("display_name")
+  description String?
+  permissions Json     // {"dashboard": {"view": true, "edit": false}}
+  isSystem    Boolean  @default(false) @map("is_system") // System roles cannot be deleted
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  adminRoles AdminRole[]
+  
+  @@map("roles")
+}
+
+// Admin Role Assignments
+model AdminRole {
+  id      String @id @default(cuid())
+  adminId String @map("admin_id")
+  roleId  String @map("role_id")
+  cafeId  String @map("cafe_id") // Admin can have different roles per cafe
+  
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  role  Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  cafe  Cafe  @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  
+  @@unique([adminId, roleId, cafeId])
+  @@map("admin_roles")
+}
+
+// Notifications
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id") // nullable for system notifications
+  cafeId    String?  @map("cafe_id")
+  type      String   // "reservation", "cancellation", "reminder", "system"
+  title     String
+  message   String
+  data      Json?    // Additional data
+  isRead    Boolean  @default(false) @map("is_read")
+  priority  String   @default("normal") // "low", "normal", "high", "urgent"
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cafe Cafe? @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  
+  @@map("notifications")
+}
+
+// Activity Logs
+model ActivityLog {
+  id          String   @id @default(cuid())
+  adminId     String   @map("admin_id")
+  cafeId      String?  @map("cafe_id")
+  action      String   // "create", "update", "delete", "login", "logout"
+  entity      String   // "reservation", "table", "user", "admin"
+  entityId    String?  @map("entity_id")
+  description String
+  metadata    Json?    // Additional context
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  cafe  Cafe? @relation(fields: [cafeId], references: [id], onDelete: SetNull)
+  
+  @@map("activity_logs")
+}
